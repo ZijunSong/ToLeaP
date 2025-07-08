@@ -30,7 +30,7 @@ bash ../src/benchmark/bfcl/bfcl_setup.sh
 
 First, run 
 ```
-cd data
+mkdir data &&cd data
 mkdir rotbench sealtools taskbench injecagent glaive stabletoolbench apibank
 cd ..
 ```
