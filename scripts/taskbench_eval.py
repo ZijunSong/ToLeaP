@@ -44,7 +44,8 @@ def create_messages(conversation_data: Dict) -> List[Dict]:
 @click.option("--max_model_len", type=int, default=4096)
 @click.option("--max_output_tokens", type=int, default=512)
 @click.option("--model_name", type=str)
-def main(model: str, data_paths: str, is_api: bool, tensor_parallel_size: int, batch_size: int, max_model_len: int, max_output_tokens: int, model_name:str):
+@click.option("--debug", "debug_mode", is_flag=True, default=False, help="Run in debug mode with only one data sample.")
+def main(model: str, data_paths: str, is_api: bool, tensor_parallel_size: int, batch_size: int, max_model_len: int, max_output_tokens: int, model_name:str, debug_mode: bool):
     data_results = {}
     
     llm = LLM(
@@ -64,6 +65,12 @@ def main(model: str, data_paths: str, is_api: bool, tensor_parallel_size: int, b
         tool_desc_file = os.path.join(os.path.dirname(tool_path), f"tool_desc_{data_split}.json")
         tool_desc = json.load(open(tool_desc_file, "r"))
         eval_data = json.load(open(data_path, "r"))
+
+        if debug_mode:
+            eval_data = eval_data[:1]
+            print("[Debug] - in taskbench_eval.py - The first query sample is: ")
+            print(eval_data[0]["conversations"][0]["value"])
+
         labels = [json.loads(d["conversations"][-1]["value"]) for d in eval_data]
 
         os.makedirs("../results/taskbench", exist_ok=True)
@@ -80,15 +87,21 @@ def main(model: str, data_paths: str, is_api: bool, tensor_parallel_size: int, b
                     results = llm.batch_generate_chat(messages)
                 else:
                     results = llm.batch_generate_complete(
-                        [d["conversations"][0]["value"] for d in eval_data]
+                        [{"role": "user", "content": d["conversations"][0]["value"]} for d in eval_data]
                     )
                 json.dump(results, open(output_path, "w"), indent=4)
             return results
-
-        if not os.path.exists(parsed_output_path):
+        
+        if debug_mode:
             results = run_inference()
+            print("[Debug] - in taskbench_eval.py - The answer is: ")
+            print(results[0]) 
+            assert False
         else:
-            results = json.load(open(output_path, "r"))
+            if not os.path.exists(parsed_output_path):
+                results = run_inference()
+            else:
+                results = json.load(open(output_path, "r"))
 
         parsed_results = []
         bad_cases = []
