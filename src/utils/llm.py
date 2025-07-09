@@ -3,6 +3,7 @@ from tqdm import tqdm
 from openai import OpenAI
 from cfg.config import Config
 from vllm import LLM as VLLM_LLM, SamplingParams
+from transformers import AutoTokenizer
 
 conf = Config()
 
@@ -80,6 +81,8 @@ class LLM:
         special_tokens: List[Tuple[str, str]] = None,
         selected_special_tokens: List[str] = None,
         temperature: float = 0,
+        think_mode: bool = False,
+        think_special_tokens: str = None,  # e.g. think
     ):
         # env initialization
         self.port = conf.port
@@ -98,6 +101,12 @@ class LLM:
         self.temperature = temperature
         self.should_skip_special_tokens = special_tokens is None
         self.selected_special_tokens = selected_special_tokens
+        self.think_mode = think_mode
+
+        if self.think_mode:
+            self.think_special_tokens = think_special_tokens
+            if self.think_special_tokens is None:
+                raise ValueError("think_special_tokens must be specified when think_mode is True")
 
         # sampling params
         self.gen_params = SamplingParams(
@@ -114,8 +123,11 @@ class LLM:
                 model=self.model_path_or_name,
                 tensor_parallel_size=self.tensor_parallel_size,
                 max_model_len=self.max_input_tokens,
-                trust_remote_code=True
+                trust_remote_code=True,
+                max_num_seqs=64
             )
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path_or_name)
+            
             if self.special_tokens:
                 # flatten the list of tuples
                 self.model.llm_engine.tokenizer.tokenizer.add_special_tokens({"additional_special_tokens": [token for pair in self.special_tokens for token in pair]})
@@ -127,8 +139,41 @@ class LLM:
         special_token_id_map = {token: id for token, id in zip(flatten_special_tokens, special_token_ids)}
         return special_token_id_map
 
+    def _extract_think_mode_result(self, all_outputs):
+        """
+        Extract the content after the </{think_special_tokens}> tag from the model's output.
+
+        Args:
+            all_outputs (List): A list of model outputs, where each element contains the generated text.
+
+        Returns:
+            List[str]: The final answer content after extraction. If the tag is not found, returns the original text.
+        """
+
+        extracted_results = []
+        think_tag_close = f"</{self.think_special_tokens}>"
+
+        print("[Debug] - in llm.py - all_outputs: ", all_outputs)
+        for output in all_outputs:
+            print("[Debug] - in llm.py - output: ", output)
+
+            if isinstance(output, str):
+                text = output
+            else:
+                text = output.outputs[0].text
+
+            tag_index = text.find(think_tag_close)
+            
+            if tag_index != -1:
+                extracted_text = text[tag_index + len(think_tag_close):].strip()
+                extracted_results.append(extracted_text)
+            else:
+                extracted_results.append(text.strip())
+
+        return extracted_results
+
     def parse_output_for_special_tokens(self, outputs):
-        raw_texts = [output.outputs[0].text for output in outputs]
+        raw_texts = [self.tokenizer.decode(output.outputs[0].token_ids, skip_special_tokens=False) for output in outputs]
         if not self.special_tokens:
             return raw_texts
     
@@ -237,11 +282,48 @@ class LLM:
             return all_outputs
         else:
             for i in tqdm(range(0, len(messages_batch), self.batch_size), desc="Processing batch"):
-                batch_messages = messages_batch[i:i+self.batch_size]
-                outputs = self.model.chat(batch_messages, self.gen_params, use_tqdm=False)
+                current_batch_messages = messages_batch[i:i+self.batch_size]
+                
+                processed_batch_messages = []
+                for msg_dict in current_batch_messages:
+                    if "role" in msg_dict and "content" in msg_dict:
+
+                        dummy_messages = [{"role": "user", "content": ""}]
+                        overhead_tokens = self.tokenizer.apply_chat_template(dummy_messages, tokenize=True, add_generation_prompt=True)
+                        self.template_fixed_overhead = len(overhead_tokens)
+                        self.max_user_content_tokens = self.max_input_tokens - self.template_fixed_overhead - 10
+
+                        if msg_dict["role"] == "user": 
+                            content = msg_dict["content"]
+                            original_tokens = self.tokenizer.encode(content)
+                            original_len = len(original_tokens)
+
+                            if original_len > self.max_user_content_tokens:
+                                truncated_tokens = original_tokens[:self.max_user_content_tokens]
+                                truncated_content = self.tokenizer.decode(truncated_tokens)
+
+                                if self.think_mode:
+                                    truncated_content = str(truncated_content + f"<{self.think_special_tokens}>/n")
+
+                                processed_batch_messages.append({"role": "user", "content": truncated_content})
+                            else:
+                                processed_batch_messages.append(msg_dict)
+                        else:
+                            processed_batch_messages.append(msg_dict)
+                    else:
+                        raise ValueError("Invalid message format. Expected 'role' and 'content' keys in message dictionary.")
+                        processed_batch_messages.append(msg_dict)
+                vllm_chat_input = [[msg_item] for msg_item in processed_batch_messages]
+
+                outputs = self.model.chat(vllm_chat_input, self.gen_params, use_tqdm=False)
                 all_outputs.extend(outputs)
 
-            return self.parse_output_for_special_tokens(all_outputs)
+            if self.think_mode:
+                extracted_results = self._extract_think_mode_result(all_outputs)
+                return extracted_results
+            
+            parsed_results = self.parse_output_for_special_tokens(extracted_results)
+            return parsed_results
 
     def single_generate_complete(
         self, 
