@@ -45,7 +45,21 @@ def create_messages(conversation_data: Dict) -> List[Dict]:
 @click.option("--max_output_tokens", type=int, default=512)
 @click.option("--model_name", type=str)
 @click.option("--debug", "debug_mode", is_flag=True, default=False, help="Run in debug mode with only one data sample.")
-def main(model: str, data_paths: str, is_api: bool, tensor_parallel_size: int, batch_size: int, max_model_len: int, max_output_tokens: int, model_name:str, debug_mode: bool):
+@click.option("--think_mode", "think_mode", is_flag=True, default=False)
+@click.option("--think_special_tokens", "think_special_tokens", type=str, default="think")
+def main(
+    model: str, 
+    data_paths: str, 
+    is_api: bool, 
+    tensor_parallel_size: int, 
+    batch_size: int, 
+    max_model_len: int, 
+    max_output_tokens: int, 
+    model_name:str, 
+    debug_mode: bool,
+    think_mode: bool,
+    think_special_tokens: str
+    ):
     data_results = {}
     
     llm = LLM(
@@ -55,7 +69,9 @@ def main(model: str, data_paths: str, is_api: bool, tensor_parallel_size: int, b
         use_sharegpt_format=False,
         max_input_tokens=max_model_len,
         batch_size=batch_size, 
-        max_output_tokens=max_output_tokens
+        max_output_tokens=max_output_tokens,
+        think_mode=think_mode,
+        think_special_tokens=think_special_tokens,
      )
 
     for data_path in data_paths:
