@@ -69,6 +69,9 @@ def load_eval_data(input_data_path: str) -> List[Dict]:
 @click.option("--max_model_len", type=int, default=4096)
 @click.option("--max_output_tokens", type=int, default=512)
 @click.option("--model_name", type=str)
+@click.option("--debug", "debug_mode", is_flag=True, default=False, help="Run in debug mode with only one data sample.")
+@click.option("--think_mode", "think_mode", is_flag=True, default=False)
+@click.option("--think_special_tokens", "think_special_tokens", type=str, default="think")
 def main(
     model: str, 
     dataset_name_list: list[str], 
@@ -83,6 +86,9 @@ def main(
     gpu_memory_utilization: float,
     max_output_tokens: int,
     model_name: str,
+    debug_mode: bool,
+    think_mode: bool,
+    think_special_tokens: str
     ):
     # model_name = os.path.basename(model)
     create_directories(eval_data_path, eval_result_path, model_name)
@@ -93,7 +99,9 @@ def main(
         use_sharegpt_format=False,
         max_input_tokens=max_model_len,
         batch_size=batch_size, 
-        max_output_tokens=max_output_tokens
+        max_output_tokens=max_output_tokens,
+        think_mode=think_mode,
+        think_special_tokens=think_special_tokens,
     )
     data_results = {}
     for dataset in dataset_name_list:
@@ -107,7 +115,12 @@ def main(
 
         output_path = os.path.join(model_output_dir, f"{dataset}.json")
         print(f"The raw result will be saved to {os.path.abspath(output_path)}...")
-    
+
+        if debug_mode:
+            eval_data = eval_data[:1]
+            print("[Debug] - in rotbench_eval.py - The first query sample is: ")
+            print(eval_data[0]["conversations"][0]["value"])
+
         def run_inference() -> List:
             if os.path.exists(output_path): # if exist
                 with open(output_path, "r") as f:
@@ -115,7 +128,7 @@ def main(
             else: 
                 if not is_api:
                     results = llm.batch_generate_complete(
-                        [ed["conversations"][0]["value"] for ed in eval_data]
+                        [{"role": "user", "content": ed["conversations"][0]["value"]} for ed in eval_data]
                     )
                 else: # vllm batch generate
                     messages = create_messages(eval_data) # List[List[Dict]]
@@ -123,7 +136,12 @@ def main(
                 with open(output_path, "w") as f:
                     json.dump(results, f, indent=4)
             
-        run_inference()
+        test_data = run_inference()
+
+        if debug_mode:
+            print("[Debug] - in rotbench_eval.py - The answer is: ")
+            print(test_data[0]) 
+            assert False
 
         eval_data = raw_to_pred(output_path, input_data_path)
         eval_data_filename = os.path.join(eval_data_path, model_name, dataset + ".json")
