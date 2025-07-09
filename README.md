@@ -115,6 +115,8 @@ bash one-click-evaluation.sh meta-llama/Llama-3.1-8B-Instruct false 1 256 4096 5
 ```
 If you prefer to evaluate each benchmark separately, follow the instructions below. Once `{model_name}_results.json` is generated, you can easily convert the `.json` results into `.csv` format using `json2csv.py`, making it convenient for you to fill out the form.
 
+In addition, if you want to use the debug mode, you can add the `--debug` parameter in the script. To evaluate the inference model, you need to add the `--think_mode` and `--think_special_tokens` parameters.
+
 ### RoTBench
 ```
 cd scripts
