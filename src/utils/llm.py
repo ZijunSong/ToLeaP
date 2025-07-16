@@ -110,8 +110,11 @@ class LLM:
 
         # sampling params
         self.gen_params = SamplingParams(
-            temperature=temperature,
+            temperature=self.temperature,
             max_tokens=self.max_output_tokens,
+            top_p=0.95, 
+            top_k=50,
+            seed=128,
             skip_special_tokens=self.should_skip_special_tokens,
         )
 
@@ -124,9 +127,11 @@ class LLM:
                 tensor_parallel_size=self.tensor_parallel_size,
                 max_model_len=self.max_input_tokens,
                 trust_remote_code=True,
-                max_num_seqs=64
+                max_num_seqs=64,
+                dtype='float32'
             )
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path_or_name)
+            self.tokenizer = self.model.get_tokenizer()
+            assert self.tokenizer.chat_template is not None
             
             if self.special_tokens:
                 # flatten the list of tuples
@@ -199,13 +204,6 @@ class LLM:
             all_responses.append(special_token_responses)
         return all_responses, raw_texts
 
-    def set_temperature(self, temperature: float):
-        self.gen_params = SamplingParams(
-            temperature=temperature,
-            max_tokens=self.max_output_tokens,
-            skip_special_tokens=self.should_skip_special_tokens,
-        )
-
     # sharegpt format
     def _create_messages_from_sharegpt(self, conversation_data: Dict) -> List[Dict]:
         """Create messages list from conversation data"""
@@ -264,7 +262,6 @@ class LLM:
         return self.parse_output_for_special_tokens(all_outputs)
     
     def batch_generate_complete(self, messages_batch: List[str]) -> List[Dict]:
-        gen_params = SamplingParams(temperature=self.temperature, max_tokens=self.max_output_tokens)
         all_outputs = []
         if self.is_api:
             for batch_msgs in tqdm(range(0, len(messages_batch), self.batch_size), desc="Processing API batch"):
@@ -281,48 +278,58 @@ class LLM:
                 all_outputs.extend(batch_responses)
             return all_outputs
         else:
+
+            dummy_messages = [{"role": "user", "content": ""}]
+            overhead_tokens = self.tokenizer.apply_chat_template(dummy_messages, tokenize=True, add_generation_prompt=True)
+            self.template_fixed_overhead = len(overhead_tokens)
+            
             for i in tqdm(range(0, len(messages_batch), self.batch_size), desc="Processing batch"):
-                current_batch_messages = messages_batch[i:i+self.batch_size]
-                
-                processed_batch_messages = []
+                current_batch_messages = messages_batch[i:i + self.batch_size]
+
+                prompts_for_vllm = []
                 for msg_dict in current_batch_messages:
-                    if "role" in msg_dict and "content" in msg_dict:
 
-                        dummy_messages = [{"role": "user", "content": ""}]
-                        overhead_tokens = self.tokenizer.apply_chat_template(dummy_messages, tokenize=True, add_generation_prompt=True)
-                        self.template_fixed_overhead = len(overhead_tokens)
-                        self.max_user_content_tokens = self.max_input_tokens - self.template_fixed_overhead - 10
-
-                        if msg_dict["role"] == "user": 
-                            content = msg_dict["content"]
-                            original_tokens = self.tokenizer.encode(content)
-                            original_len = len(original_tokens)
-
-                            if original_len > self.max_user_content_tokens:
-                                truncated_tokens = original_tokens[:self.max_user_content_tokens]
-                                truncated_content = self.tokenizer.decode(truncated_tokens)
-
-                                if self.think_mode:
-                                    truncated_content = str(truncated_content + f"<{self.think_special_tokens}>/n")
-
-                                processed_batch_messages.append({"role": "user", "content": truncated_content})
-                            else:
-                                processed_batch_messages.append(msg_dict)
-                        else:
-                            processed_batch_messages.append(msg_dict)
-                    else:
+                    if not ("role" in msg_dict and "content" in msg_dict):
                         raise ValueError("Invalid message format. Expected 'role' and 'content' keys in message dictionary.")
-                        processed_batch_messages.append(msg_dict)
-                vllm_chat_input = [[msg_item] for msg_item in processed_batch_messages]
 
-                outputs = self.model.chat(vllm_chat_input, self.gen_params, use_tqdm=False)
+                    self.max_user_content_tokens = self.max_input_tokens - self.template_fixed_overhead - 10
+
+                    processed_msg = msg_dict.copy()
+
+                    if processed_msg["role"] == "user":
+                        content = processed_msg["content"]
+                        original_tokens = self.tokenizer.encode(content)
+                        original_len = len(original_tokens)
+
+                        if original_len > self.max_user_content_tokens:
+                            truncated_tokens = original_tokens[:self.max_user_content_tokens]
+                            truncated_content = self.tokenizer.decode(truncated_tokens)
+
+                            if self.think_mode:
+                                truncated_content = str(truncated_content + f"<{self.think_special_tokens}>/n")
+
+                            processed_msg["content"] = truncated_content
+
+                    if not isinstance(processed_msg, list):
+                        single_conversation = [processed_msg]
+                    else:
+                        single_conversation = processed_msg
+                    
+                    text = self.tokenizer.apply_chat_template(
+                        single_conversation,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    prompts_for_vllm.append(text)
+
+                outputs = self.model.generate(prompts_for_vllm, self.gen_params)
                 all_outputs.extend(outputs)
 
             if self.think_mode:
                 extracted_results = self._extract_think_mode_result(all_outputs)
                 return extracted_results
             
-            parsed_results = self.parse_output_for_special_tokens(extracted_results)
+            parsed_results = self.parse_output_for_special_tokens(all_outputs)
             return parsed_results
 
     def single_generate_complete(
@@ -351,7 +358,6 @@ class LLM:
         """
         if self.use_sharegpt_format:
             messages = self._create_messages_from_sharegpt(messages)
-        # print(messages)
         if self.is_api:
             output = self.client.chat.completions.create(
                 model=self.model_path_or_name,
