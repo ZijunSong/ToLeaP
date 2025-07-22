@@ -87,7 +87,7 @@ def process_dataset(
     # Create model output directory
     model_output_dir = os.path.join(raw_data_path, model_name)
     if not os.path.exists(model_output_dir):
-        os.makedirs(model_output_dir)
+        os.makedirs(model_output_dir, exist_ok=True)
 
     output_path = os.path.join(model_output_dir, f"{dataset}.json")
     print(f"The raw result for {dataset} will be saved to {os.path.abspath(output_path)}...")
@@ -157,9 +157,9 @@ def process_dataset(
 @click.option("--raw_data_path", type=str, default="../results/sealtools/raw_pred_data", help="Path to the folder for raw model predictions.")
 @click.option("--eval_data_path", type=str, default='../results/sealtools/pred_data', help="Path to the folder for processed prediction data.")
 @click.option("--eval_result_path", type=str, default='../results/sealtools/eval_result', help="Path to the folder for final evaluation results.")
-@click.option("--is_api", is_flag=True, default=False, help="Whether to use an API for inference.")
+@click.option("--is_api", type=bool, default=False, help="Whether to use an API for inference.")
 @click.option("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vLLM.")
-@click.ooption("--batch_size", type=int, default=128, help="Batch size for inference.")
+@click.option("--batch_size", type=int, default=128, help="Batch size for inference.")
 @click.option("--gpu_memory_utilization", type=float, default=0.9, help="GPU memory utilization.")
 @click.option("--max_model_len", type=int, default=8192, help="Maximum model length.")
 @click.option("--max_output_tokens", type=int, default=1024, help="Maximum number of output tokens.")
